@@ -1,0 +1,2179 @@
+openapi: 3.0.3
+info:
+  title: Household Financial Planner API
+  description: |
+    REST API for the Household Financial Planner — a Canadian-first personal finance
+    application for couples. All endpoints require JWT authentication via httpOnly cookie
+    unless otherwise noted.
+  version: 1.0.0
+  contact:
+    name: Ken Mau
+
+servers:
+  - url: /api/v1
+    description: API v1 (URL-path versioned)
+
+tags:
+  - name: Auth
+    description: Authentication (login/logout/session)
+  - name: Accounts
+    description: Financial account CRUD and balance snapshots
+  - name: Transactions
+    description: Transaction CRUD, batch entry, and splits
+  - name: Categories
+    description: Spending/income category management
+  - name: Budgets
+    description: Monthly budget management
+  - name: Recurring
+    description: Recurring transaction templates and generation
+  - name: Dashboard
+    description: Aggregated dashboard data and layout
+  - name: Goals
+    description: "Financial goal tracking (P1)"
+  - name: Tax Planning
+    description: "Canadian tax optimization (P1)"
+
+# ---------------------------------------------------------------------------
+# Security
+# ---------------------------------------------------------------------------
+security:
+  - cookieAuth: []
+
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: token
+      description: JWT in httpOnly, Secure, SameSite=Strict cookie. 30-day expiry.
+
+  # -------------------------------------------------------------------------
+  # Shared Schemas
+  # -------------------------------------------------------------------------
+  schemas:
+    # --- Error ---
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum:
+                - VALIDATION_ERROR
+                - AUTHENTICATION_ERROR
+                - AUTHORIZATION_ERROR
+                - NOT_FOUND
+                - CONFLICT
+                - INTERNAL_ERROR
+            message:
+              type: string
+              description: Human-readable error description
+            details:
+              type: array
+              items:
+                type: object
+                properties:
+                  field:
+                    type: string
+                  issue:
+                    type: string
+
+    # --- Pagination wrapper ---
+    PaginatedResponse:
+      type: object
+      required: [data, total, page, pageSize]
+      properties:
+        data:
+          type: array
+          items: {}
+        total:
+          type: integer
+          description: Total matching records
+        page:
+          type: integer
+          description: Current page (1-indexed)
+        pageSize:
+          type: integer
+          description: Records per page
+
+    # --- Enums ---
+    AccountTypeEnum:
+      type: string
+      enum:
+        - chequing
+        - savings
+        - credit_card
+        - rrsp
+        - tfsa
+        - spousal_rrsp
+        - resp
+        - lira
+        - rrif
+        - non_registered
+        - mortgage
+        - loc
+        - property
+        - vehicle
+        - other_asset
+        - other_liability
+
+    AssetOrLiabilityEnum:
+      type: string
+      enum: [asset, liability]
+
+    TransactionTypeEnum:
+      type: string
+      enum: [expense, income, transfer]
+
+    TransactionStatusEnum:
+      type: string
+      enum: [confirmed, pending, skipped]
+
+    CategoryTypeEnum:
+      type: string
+      enum: [expense, income, transfer]
+
+    FrequencyEnum:
+      type: string
+      enum: [weekly, biweekly, monthly, quarterly, semiannual, annual]
+
+    GoalStatusEnum:
+      type: string
+      enum: [active, completed, abandoned]
+
+    GoalPriorityEnum:
+      type: string
+      enum: [high, medium, low]
+
+    ContributionTypeEnum:
+      type: string
+      enum: [rrsp, tfsa, spousal_rrsp, resp]
+
+    # --- Auth ---
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+          minLength: 1
+          maxLength: 50
+        password:
+          type: string
+          minLength: 1
+          maxLength: 128
+
+    UserResponse:
+      type: object
+      required: [id, username, displayName]
+      properties:
+        id:
+          type: string
+          format: uuid
+        username:
+          type: string
+        displayName:
+          type: string
+
+    # --- Account ---
+    Account:
+      type: object
+      required: [id, name, accountType, assetOrLiability, currency, isActive, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        institution:
+          type: string
+          nullable: true
+        accountType:
+          $ref: '#/components/schemas/AccountTypeEnum'
+        assetOrLiability:
+          $ref: '#/components/schemas/AssetOrLiabilityEnum'
+        currency:
+          type: string
+          default: CAD
+          enum: [CAD, USD]
+        notes:
+          type: string
+          nullable: true
+        isActive:
+          type: boolean
+        currentBalance:
+          type: string
+          description: Most recent balance snapshot value as decimal string
+          nullable: true
+        createdBy:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    CreateAccountRequest:
+      type: object
+      required: [name, accountType]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        institution:
+          type: string
+          maxLength: 100
+        accountType:
+          $ref: '#/components/schemas/AccountTypeEnum'
+        currency:
+          type: string
+          enum: [CAD, USD]
+          default: CAD
+        notes:
+          type: string
+          maxLength: 500
+
+    UpdateAccountRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        institution:
+          type: string
+          maxLength: 100
+        currency:
+          type: string
+          enum: [CAD, USD]
+        notes:
+          type: string
+          maxLength: 500
+        isActive:
+          type: boolean
+
+    # --- Balance Snapshot ---
+    BalanceSnapshot:
+      type: object
+      required: [id, accountId, date, balance, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        accountId:
+          type: string
+          format: uuid
+        date:
+          type: string
+          format: date
+        balance:
+          type: string
+          description: Decimal string, e.g. "12345.67"
+        notes:
+          type: string
+          nullable: true
+        createdBy:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+
+    CreateSnapshotRequest:
+      type: object
+      required: [balance]
+      properties:
+        date:
+          type: string
+          format: date
+          description: Defaults to today if omitted
+        balance:
+          type: string
+          pattern: '^\-?\d+(\.\d{1,2})?$'
+          description: Decimal string
+        notes:
+          type: string
+          maxLength: 500
+
+    # --- Category ---
+    Category:
+      type: object
+      required: [id, name, type, isSystem, sortOrder]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        parentCategoryId:
+          type: string
+          format: uuid
+          nullable: true
+        type:
+          $ref: '#/components/schemas/CategoryTypeEnum'
+        icon:
+          type: string
+          nullable: true
+        color:
+          type: string
+          nullable: true
+        sortOrder:
+          type: integer
+        isSystem:
+          type: boolean
+        children:
+          type: array
+          items:
+            $ref: '#/components/schemas/Category'
+
+    CreateCategoryRequest:
+      type: object
+      required: [name, type]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 50
+        parentCategoryId:
+          type: string
+          format: uuid
+        type:
+          $ref: '#/components/schemas/CategoryTypeEnum'
+        icon:
+          type: string
+          maxLength: 30
+        color:
+          type: string
+          maxLength: 20
+
+    UpdateCategoryRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 50
+        icon:
+          type: string
+          maxLength: 30
+        color:
+          type: string
+          maxLength: 20
+        sortOrder:
+          type: integer
+
+    # --- Transaction ---
+    Transaction:
+      type: object
+      required: [id, date, amount, type, status, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        date:
+          type: string
+          format: date
+        amount:
+          type: string
+          description: Decimal string, always positive. Type field indicates direction.
+        description:
+          type: string
+          nullable: true
+        categoryId:
+          type: string
+          format: uuid
+          nullable: true
+        category:
+          $ref: '#/components/schemas/Category'
+        accountId:
+          type: string
+          format: uuid
+          nullable: true
+        type:
+          $ref: '#/components/schemas/TransactionTypeEnum'
+        notes:
+          type: string
+          nullable: true
+        isRecurringInstance:
+          type: boolean
+        recurringTransactionId:
+          type: string
+          format: uuid
+          nullable: true
+        status:
+          $ref: '#/components/schemas/TransactionStatusEnum'
+        enteredBy:
+          type: string
+          format: uuid
+        splits:
+          type: array
+          items:
+            $ref: '#/components/schemas/TransactionSplit'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    TransactionSplit:
+      type: object
+      required: [id, categoryId, amount]
+      properties:
+        id:
+          type: string
+          format: uuid
+        categoryId:
+          type: string
+          format: uuid
+        category:
+          $ref: '#/components/schemas/Category'
+        amount:
+          type: string
+        notes:
+          type: string
+          nullable: true
+
+    CreateTransactionRequest:
+      type: object
+      required: [amount, type]
+      properties:
+        date:
+          type: string
+          format: date
+          description: Defaults to today
+        amount:
+          type: string
+          pattern: '^\d+(\.\d{1,2})?$'
+          description: Must be positive
+        description:
+          type: string
+          maxLength: 200
+        categoryId:
+          type: string
+          format: uuid
+        accountId:
+          type: string
+          format: uuid
+        type:
+          $ref: '#/components/schemas/TransactionTypeEnum'
+        notes:
+          type: string
+          maxLength: 500
+        splits:
+          type: array
+          items:
+            type: object
+            required: [categoryId, amount]
+            properties:
+              categoryId:
+                type: string
+                format: uuid
+              amount:
+                type: string
+                pattern: '^\d+(\.\d{1,2})?$'
+              notes:
+                type: string
+                maxLength: 200
+          description: If provided, split amounts must sum to transaction amount. categoryId on the parent is ignored when splits are present.
+
+    UpdateTransactionRequest:
+      type: object
+      properties:
+        date:
+          type: string
+          format: date
+        amount:
+          type: string
+          pattern: '^\d+(\.\d{1,2})?$'
+        description:
+          type: string
+          maxLength: 200
+        categoryId:
+          type: string
+          format: uuid
+        accountId:
+          type: string
+          format: uuid
+        type:
+          $ref: '#/components/schemas/TransactionTypeEnum'
+        notes:
+          type: string
+          maxLength: 500
+        status:
+          $ref: '#/components/schemas/TransactionStatusEnum'
+        splits:
+          type: array
+          items:
+            type: object
+            required: [categoryId, amount]
+            properties:
+              categoryId:
+                type: string
+                format: uuid
+              amount:
+                type: string
+                pattern: '^\d+(\.\d{1,2})?$'
+              notes:
+                type: string
+                maxLength: 200
+
+    BatchCreateTransactionsRequest:
+      type: object
+      required: [transactions]
+      properties:
+        transactions:
+          type: array
+          items:
+            $ref: '#/components/schemas/CreateTransactionRequest'
+          minItems: 1
+          maxItems: 100
+
+    BatchCreateTransactionsResponse:
+      type: object
+      required: [created, errors]
+      properties:
+        created:
+          type: array
+          items:
+            $ref: '#/components/schemas/Transaction'
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              index:
+                type: integer
+              error:
+                type: string
+
+    TransactionAutoComplete:
+      type: object
+      required: [description, categoryId, count]
+      properties:
+        description:
+          type: string
+        categoryId:
+          type: string
+          format: uuid
+        count:
+          type: integer
+          description: Times this description+category pair has been used
+
+    # --- Budget ---
+    BudgetEntry:
+      type: object
+      required: [id, categoryId, month, amount, rolloverEnabled]
+      properties:
+        id:
+          type: string
+          format: uuid
+        categoryId:
+          type: string
+          format: uuid
+        category:
+          $ref: '#/components/schemas/Category'
+        month:
+          type: string
+          pattern: '^\d{4}-\d{2}$'
+          description: YYYY-MM format
+        amount:
+          type: string
+          description: Budgeted amount as decimal string
+        rolloverEnabled:
+          type: boolean
+        spent:
+          type: string
+          description: Actual spend this month (computed)
+        remaining:
+          type: string
+          description: Budget - spent (computed, can be negative)
+        rolloverAmount:
+          type: string
+          description: Carry-forward from previous month (computed dynamically by iterating backward — no stored column, no cap on chain depth)
+        paceStatus:
+          type: string
+          enum: [under_pace, on_pace, over_pace]
+          description: Spending pace relative to days elapsed
+
+    BudgetUpsertRequest:
+      type: object
+      required: [budgets]
+      properties:
+        budgets:
+          type: array
+          items:
+            type: object
+            required: [categoryId, month, amount]
+            properties:
+              categoryId:
+                type: string
+                format: uuid
+              month:
+                type: string
+                pattern: '^\d{4}-\d{2}$'
+              amount:
+                type: string
+                pattern: '^\d+(\.\d{1,2})?$'
+              rolloverEnabled:
+                type: boolean
+
+    BudgetSummary:
+      type: object
+      required: [month, totalIncome, totalBudgeted, totalSpent, savingsRate]
+      properties:
+        month:
+          type: string
+        totalIncome:
+          type: string
+        totalBudgeted:
+          type: string
+        totalSpent:
+          type: string
+        remaining:
+          type: string
+        savingsRate:
+          type: number
+          format: float
+          description: (income - expenses) / income as percentage
+
+    # --- Recurring Transaction ---
+    RecurringTransaction:
+      type: object
+      required: [id, description, amount, type, frequency, startDate, isActive]
+      properties:
+        id:
+          type: string
+          format: uuid
+        description:
+          type: string
+        amount:
+          type: string
+        categoryId:
+          type: string
+          format: uuid
+          nullable: true
+        category:
+          $ref: '#/components/schemas/Category'
+        accountId:
+          type: string
+          format: uuid
+          nullable: true
+        type:
+          $ref: '#/components/schemas/TransactionTypeEnum'
+        frequency:
+          $ref: '#/components/schemas/FrequencyEnum'
+        startDate:
+          type: string
+          format: date
+        endDate:
+          type: string
+          format: date
+          nullable: true
+        isActive:
+          type: boolean
+        nextOccurrence:
+          type: string
+          format: date
+          description: Computed — next date this will generate
+        createdBy:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+
+    CreateRecurringRequest:
+      type: object
+      required: [description, amount, type, frequency, startDate]
+      properties:
+        description:
+          type: string
+          minLength: 1
+          maxLength: 200
+        amount:
+          type: string
+          pattern: '^\d+(\.\d{1,2})?$'
+        categoryId:
+          type: string
+          format: uuid
+        accountId:
+          type: string
+          format: uuid
+        type:
+          $ref: '#/components/schemas/TransactionTypeEnum'
+        frequency:
+          $ref: '#/components/schemas/FrequencyEnum'
+        startDate:
+          type: string
+          format: date
+        endDate:
+          type: string
+          format: date
+
+    UpdateRecurringRequest:
+      type: object
+      properties:
+        description:
+          type: string
+          minLength: 1
+          maxLength: 200
+        amount:
+          type: string
+          pattern: '^\d+(\.\d{1,2})?$'
+        categoryId:
+          type: string
+          format: uuid
+        accountId:
+          type: string
+          format: uuid
+        frequency:
+          $ref: '#/components/schemas/FrequencyEnum'
+        endDate:
+          type: string
+          format: date
+        isActive:
+          type: boolean
+
+    GenerateRecurringResponse:
+      type: object
+      required: [generated]
+      properties:
+        generated:
+          type: integer
+          description: Number of pending transactions created
+
+    # --- Dashboard ---
+    DashboardResponse:
+      type: object
+      required: [netWorth, monthlySpending, budgetStatus, upcomingBills, recentTransactions, netWorthHistory, assetBreakdown]
+      properties:
+        netWorth:
+          type: object
+          properties:
+            total:
+              type: string
+            totalAssets:
+              type: string
+            totalLiabilities:
+              type: string
+            changeFromLastMonth:
+              type: string
+        monthlySpending:
+          type: object
+          properties:
+            total:
+              type: string
+            topCategories:
+              type: array
+              items:
+                type: object
+                properties:
+                  categoryId:
+                    type: string
+                    format: uuid
+                  categoryName:
+                    type: string
+                  amount:
+                    type: string
+        budgetStatus:
+          type: object
+          properties:
+            totalBudgeted:
+              type: string
+            totalSpent:
+              type: string
+            categories:
+              type: array
+              items:
+                type: object
+                properties:
+                  categoryId:
+                    type: string
+                    format: uuid
+                  categoryName:
+                    type: string
+                  budgeted:
+                    type: string
+                  spent:
+                    type: string
+                  paceStatus:
+                    type: string
+                    enum: [under_pace, on_pace, over_pace]
+        upcomingBills:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+                format: uuid
+              description:
+                type: string
+              amount:
+                type: string
+              dueDate:
+                type: string
+                format: date
+              accountId:
+                type: string
+                format: uuid
+              isOverdue:
+                type: boolean
+        recentTransactions:
+          type: array
+          items:
+            $ref: '#/components/schemas/Transaction'
+        netWorthHistory:
+          type: array
+          items:
+            type: object
+            properties:
+              month:
+                type: string
+                pattern: '^\d{4}-\d{2}$'
+              netWorth:
+                type: string
+              assets:
+                type: string
+              liabilities:
+                type: string
+        assetBreakdown:
+          type: array
+          items:
+            type: object
+            properties:
+              category:
+                type: string
+                enum: [cash, investment, property, debt, other]
+              total:
+                type: string
+              percentage:
+                type: number
+                format: float
+        savingsRate:
+          type: number
+          format: float
+          nullable: true
+
+    DashboardLayoutRequest:
+      type: object
+      required: [widgetConfig]
+      properties:
+        widgetConfig:
+          type: array
+          items:
+            type: object
+            required: [widgetId, visible, order]
+            properties:
+              widgetId:
+                type: string
+                enum:
+                  - net_worth_summary
+                  - net_worth_chart
+                  - asset_breakdown
+                  - monthly_spending
+                  - upcoming_bills
+                  - budget_status
+                  - recent_transactions
+                  - savings_rate
+              visible:
+                type: boolean
+              order:
+                type: integer
+
+    DashboardLayoutResponse:
+      type: object
+      required: [id, userId, widgetConfig]
+      properties:
+        id:
+          type: string
+          format: uuid
+        userId:
+          type: string
+          format: uuid
+        widgetConfig:
+          type: array
+          items:
+            type: object
+            properties:
+              widgetId:
+                type: string
+              visible:
+                type: boolean
+              order:
+                type: integer
+
+    # --- Goal (P1) ---
+    Goal:
+      type: object
+      required: [id, name, targetAmount, currentAmount, status, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        targetAmount:
+          type: string
+        currentAmount:
+          type: string
+        targetDate:
+          type: string
+          format: date
+          nullable: true
+        priority:
+          $ref: '#/components/schemas/GoalPriorityEnum'
+        linkedAccountId:
+          type: string
+          format: uuid
+          nullable: true
+        icon:
+          type: string
+          nullable: true
+        color:
+          type: string
+          nullable: true
+        status:
+          $ref: '#/components/schemas/GoalStatusEnum'
+        monthlySavingsTarget:
+          type: string
+          description: Computed — (target - current) / months remaining
+          nullable: true
+        projectedCompletionDate:
+          type: string
+          format: date
+          description: Computed from contribution pace
+          nullable: true
+        createdBy:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    CreateGoalRequest:
+      type: object
+      required: [name, targetAmount]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        targetAmount:
+          type: string
+          pattern: '^\d+(\.\d{1,2})?$'
+        targetDate:
+          type: string
+          format: date
+        priority:
+          $ref: '#/components/schemas/GoalPriorityEnum'
+        linkedAccountId:
+          type: string
+          format: uuid
+        icon:
+          type: string
+          maxLength: 30
+        color:
+          type: string
+          maxLength: 20
+
+    UpdateGoalRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        targetAmount:
+          type: string
+          pattern: '^\d+(\.\d{1,2})?$'
+        currentAmount:
+          type: string
+          pattern: '^\-?\d+(\.\d{1,2})?$'
+        targetDate:
+          type: string
+          format: date
+        priority:
+          $ref: '#/components/schemas/GoalPriorityEnum'
+        linkedAccountId:
+          type: string
+          format: uuid
+          nullable: true
+        icon:
+          type: string
+          maxLength: 30
+        color:
+          type: string
+          maxLength: 20
+        status:
+          $ref: '#/components/schemas/GoalStatusEnum'
+
+    GoalContribution:
+      type: object
+      required: [id, goalId, date, amount, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        goalId:
+          type: string
+          format: uuid
+        date:
+          type: string
+          format: date
+        amount:
+          type: string
+        notes:
+          type: string
+          nullable: true
+        createdBy:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+
+    CreateGoalContributionRequest:
+      type: object
+      required: [amount]
+      properties:
+        date:
+          type: string
+          format: date
+        amount:
+          type: string
+          pattern: '^\d+(\.\d{1,2})?$'
+        notes:
+          type: string
+          maxLength: 500
+
+    # --- Tax Profile (P1) ---
+    TaxProfile:
+      type: object
+      required: [id, userId, taxYear, annualIncome, rrspRoom, tfsaRoom]
+      properties:
+        id:
+          type: string
+          format: uuid
+        userId:
+          type: string
+          format: uuid
+        taxYear:
+          type: integer
+        annualIncome:
+          type: string
+        rrspRoom:
+          type: string
+        tfsaRoom:
+          type: string
+        rrspUsed:
+          type: string
+          description: Computed — sum of RRSP contributions this year
+        tfsaUsed:
+          type: string
+          description: Computed — sum of TFSA contributions this year
+        rrspRemaining:
+          type: string
+          description: Computed — room - used
+        tfsaRemaining:
+          type: string
+          description: Computed — room - used
+        federalMarginalRate:
+          type: number
+          format: float
+          description: Computed from annualIncome
+        provincialMarginalRate:
+          type: number
+          format: float
+          description: Computed from annualIncome
+        combinedMarginalRate:
+          type: number
+          format: float
+          description: Federal + provincial
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    CreateTaxProfileRequest:
+      type: object
+      required: [taxYear, annualIncome, rrspRoom, tfsaRoom]
+      properties:
+        taxYear:
+          type: integer
+          minimum: 2020
+          maximum: 2099
+        annualIncome:
+          type: string
+          pattern: '^\d+(\.\d{1,2})?$'
+        rrspRoom:
+          type: string
+          pattern: '^\d+(\.\d{1,2})?$'
+        tfsaRoom:
+          type: string
+          pattern: '^\d+(\.\d{1,2})?$'
+
+    UpdateTaxProfileRequest:
+      type: object
+      properties:
+        annualIncome:
+          type: string
+          pattern: '^\d+(\.\d{1,2})?$'
+        rrspRoom:
+          type: string
+          pattern: '^\d+(\.\d{1,2})?$'
+        tfsaRoom:
+          type: string
+          pattern: '^\d+(\.\d{1,2})?$'
+
+    TaxContribution:
+      type: object
+      required: [id, taxProfileId, date, amount, contributionType]
+      properties:
+        id:
+          type: string
+          format: uuid
+        taxProfileId:
+          type: string
+          format: uuid
+        accountId:
+          type: string
+          format: uuid
+          nullable: true
+        date:
+          type: string
+          format: date
+        amount:
+          type: string
+        contributionType:
+          $ref: '#/components/schemas/ContributionTypeEnum'
+        beneficiaryUserId:
+          type: string
+          format: uuid
+          nullable: true
+          description: For spousal RRSP — who the contribution is for
+        attributionExpiryDate:
+          type: string
+          format: date
+          nullable: true
+          description: For spousal RRSP — when 3-year window expires
+        attributionCleared:
+          type: boolean
+          description: Computed — has 3-year window passed?
+        createdAt:
+          type: string
+          format: date-time
+
+    CreateTaxContributionRequest:
+      type: object
+      required: [amount, contributionType]
+      properties:
+        accountId:
+          type: string
+          format: uuid
+        date:
+          type: string
+          format: date
+        amount:
+          type: string
+          pattern: '^\d+(\.\d{1,2})?$'
+        contributionType:
+          $ref: '#/components/schemas/ContributionTypeEnum'
+        beneficiaryUserId:
+          type: string
+          format: uuid
+          description: Required when contributionType is spousal_rrsp
+
+    TaxRecommendation:
+      type: object
+      properties:
+        recommendation:
+          type: string
+          enum: [prioritize_rrsp, prioritize_tfsa, split_evenly]
+        rationale:
+          type: string
+        estimatedRrspRefund:
+          type: string
+          description: Estimated tax refund from RRSP contribution at marginal rate
+        disclaimer:
+          type: string
+          default: "This is not financial advice. Consult a qualified financial advisor for personalized recommendations."
+
+  # -------------------------------------------------------------------------
+  # Shared parameters
+  # -------------------------------------------------------------------------
+  parameters:
+    pathId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+paths:
+  # === AUTH ===
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Log in with username and password
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Login successful. JWT set as httpOnly cookie.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+        '401':
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Log out and clear session cookie
+      responses:
+        '204':
+          description: Cookie cleared
+
+  /auth/me:
+    get:
+      tags: [Auth]
+      summary: Get current authenticated user
+      responses:
+        '200':
+          description: Current user info
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # === ACCOUNTS ===
+  /accounts:
+    get:
+      tags: [Accounts]
+      summary: List all accounts
+      parameters:
+        - name: type
+          in: query
+          schema:
+            $ref: '#/components/schemas/AccountTypeEnum'
+        - name: assetOrLiability
+          in: query
+          schema:
+            $ref: '#/components/schemas/AssetOrLiabilityEnum'
+        - name: isActive
+          in: query
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: List of accounts with current balances
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Account'
+    post:
+      tags: [Accounts]
+      summary: Create a new account
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAccountRequest'
+      responses:
+        '201':
+          description: Account created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Account'
+        '422':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /accounts/{id}:
+    get:
+      tags: [Accounts]
+      summary: Get account by ID
+      parameters:
+        - $ref: '#/components/parameters/pathId'
+      responses:
+        '200':
+          description: Account details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Account'
+        '404':
+          description: Account not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    put:
+      tags: [Accounts]
+      summary: Update account
+      parameters:
+        - $ref: '#/components/parameters/pathId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAccountRequest'
+      responses:
+        '200':
+          description: Updated account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Account'
+    delete:
+      tags: [Accounts]
+      summary: Soft-delete (deactivate) an account
+      description: Sets isActive to false. Accounts with balance snapshots or transactions are never hard-deleted.
+      parameters:
+        - $ref: '#/components/parameters/pathId'
+      responses:
+        '204':
+          description: Account deactivated
+
+  /accounts/{id}/snapshots:
+    get:
+      tags: [Accounts]
+      summary: List balance snapshots for an account
+      parameters:
+        - $ref: '#/components/parameters/pathId'
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 60
+            maximum: 120
+      responses:
+        '200':
+          description: Balance history sorted by date descending
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/BalanceSnapshot'
+    post:
+      tags: [Accounts]
+      summary: Record a new balance snapshot
+      parameters:
+        - $ref: '#/components/parameters/pathId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSnapshotRequest'
+      responses:
+        '201':
+          description: Snapshot created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BalanceSnapshot'
+
+  # === TRANSACTIONS ===
+  /transactions:
+    get:
+      tags: [Transactions]
+      summary: List transactions with filtering and pagination
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+            minimum: 1
+        - name: pageSize
+          in: query
+          schema:
+            type: integer
+            default: 50
+            minimum: 1
+            maximum: 100
+        - name: categoryId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: accountId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: type
+          in: query
+          schema:
+            $ref: '#/components/schemas/TransactionTypeEnum'
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/TransactionStatusEnum'
+        - name: dateFrom
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: dateTo
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: search
+          in: query
+          schema:
+            type: string
+            maxLength: 100
+          description: Case-insensitive substring match on description (ILIKE). No full-text search in v1.
+        - name: sortBy
+          in: query
+          schema:
+            type: string
+            enum: [date, amount, description, category]
+            default: date
+        - name: sortOrder
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+      responses:
+        '200':
+          description: Paginated transaction list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Transaction'
+    post:
+      tags: [Transactions]
+      summary: Create a single transaction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTransactionRequest'
+      responses:
+        '201':
+          description: Transaction created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transaction'
+        '422':
+          description: Validation error (e.g. splits don't sum to amount)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /transactions/batch:
+    post:
+      tags: [Transactions]
+      summary: Create multiple transactions at once
+      description: Processes each transaction independently. Valid transactions are created even if others fail.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchCreateTransactionsRequest'
+      responses:
+        '200':
+          description: Batch result with created transactions and any errors
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchCreateTransactionsResponse'
+
+  /transactions/autocomplete:
+    get:
+      tags: [Transactions]
+      summary: Get auto-complete suggestions from transaction history
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 2
+            maxLength: 100
+          description: Prefix to match against transaction descriptions
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 10
+            maximum: 20
+      responses:
+        '200':
+          description: Matching descriptions with their most-used category
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TransactionAutoComplete'
+
+  /transactions/{id}:
+    get:
+      tags: [Transactions]
+      summary: Get transaction by ID (including splits)
+      parameters:
+        - $ref: '#/components/parameters/pathId'
+      responses:
+        '200':
+          description: Transaction with splits
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transaction'
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    put:
+      tags: [Transactions]
+      summary: Update a transaction
+      parameters:
+        - $ref: '#/components/parameters/pathId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateTransactionRequest'
+      responses:
+        '200':
+          description: Updated transaction
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transaction'
+    delete:
+      tags: [Transactions]
+      summary: Delete a transaction
+      parameters:
+        - $ref: '#/components/parameters/pathId'
+      responses:
+        '204':
+          description: Transaction deleted
+
+  # === CATEGORIES ===
+  /categories:
+    get:
+      tags: [Categories]
+      summary: List all categories (tree structure)
+      description: Returns top-level categories with children nested. System categories are included.
+      responses:
+        '200':
+          description: Category tree
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Category'
+    post:
+      tags: [Categories]
+      summary: Create a category
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCategoryRequest'
+      responses:
+        '201':
+          description: Category created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Category'
+        '409':
+          description: Category with this name already exists at this level
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /categories/{id}:
+    put:
+      tags: [Categories]
+      summary: Update a category
+      parameters:
+        - $ref: '#/components/parameters/pathId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateCategoryRequest'
+      responses:
+        '200':
+          description: Updated category
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Category'
+    delete:
+      tags: [Categories]
+      summary: Delete a category
+      description: Fails if category has transactions — user must reassign first. System categories cannot be deleted.
+      parameters:
+        - $ref: '#/components/parameters/pathId'
+      responses:
+        '204':
+          description: Category deleted
+        '409':
+          description: Category has transactions or is a system category
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # === BUDGETS ===
+  /budgets:
+    get:
+      tags: [Budgets]
+      summary: Get budgets for a month with actual spending
+      parameters:
+        - name: month
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: '^\d{4}-\d{2}$'
+          description: YYYY-MM format
+      responses:
+        '200':
+          description: Budget entries with computed fields (spent, remaining, pace)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/BudgetEntry'
+    put:
+      tags: [Budgets]
+      summary: Bulk upsert budgets for a month
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BudgetUpsertRequest'
+      responses:
+        '200':
+          description: Upserted budgets
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/BudgetEntry'
+
+  /budgets/summary:
+    get:
+      tags: [Budgets]
+      summary: Get budget summary for a month (income, expenses, savings rate)
+      parameters:
+        - name: month
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: '^\d{4}-\d{2}$'
+      responses:
+        '200':
+          description: Budget summary with savings rate
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BudgetSummary'
+
+  /budgets/trends:
+    get:
+      tags: [Budgets]
+      summary: Get budget vs actual trends over multiple months
+      parameters:
+        - name: categoryId
+          in: query
+          schema:
+            type: string
+            format: uuid
+          description: Filter to a single category, or omit for all
+        - name: months
+          in: query
+          schema:
+            type: integer
+            default: 6
+            minimum: 1
+            maximum: 24
+          description: Number of months to look back
+      responses:
+        '200':
+          description: Monthly budget vs actual data
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    month:
+                      type: string
+                    categoryId:
+                      type: string
+                      format: uuid
+                    categoryName:
+                      type: string
+                    budgeted:
+                      type: string
+                    actual:
+                      type: string
+
+  # === RECURRING ===
+  /recurring:
+    get:
+      tags: [Recurring]
+      summary: List all recurring transaction templates
+      parameters:
+        - name: isActive
+          in: query
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: Recurring templates with next occurrence
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RecurringTransaction'
+    post:
+      tags: [Recurring]
+      summary: Create a recurring transaction template
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRecurringRequest'
+      responses:
+        '201':
+          description: Template created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecurringTransaction'
+
+  /recurring/{id}:
+    put:
+      tags: [Recurring]
+      summary: Update a recurring template
+      parameters:
+        - $ref: '#/components/parameters/pathId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateRecurringRequest'
+      responses:
+        '200':
+          description: Updated template
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecurringTransaction'
+    delete:
+      tags: [Recurring]
+      summary: Delete a recurring template
+      description: Generated transactions are not deleted — only future generation stops.
+      parameters:
+        - $ref: '#/components/parameters/pathId'
+      responses:
+        '204':
+          description: Template deleted
+
+  /recurring/generate:
+    post:
+      tags: [Recurring]
+      summary: Generate pending transactions from active templates
+      description: |
+        Idempotent — skips if a transaction already exists for a recurring+date combo.
+        Generates up to the target date (default: end of current month).
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                targetDate:
+                  type: string
+                  format: date
+                  description: Generate up to this date. Defaults to end of current month.
+      responses:
+        '200':
+          description: Generation result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerateRecurringResponse'
+
+  # === DASHBOARD ===
+  /dashboard:
+    get:
+      tags: [Dashboard]
+      summary: Get aggregated dashboard data
+      description: Executes 6 queries in parallel and returns combined result.
+      responses:
+        '200':
+          description: Full dashboard payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DashboardResponse'
+
+  /dashboard/layout:
+    get:
+      tags: [Dashboard]
+      summary: Get user's dashboard widget layout
+      responses:
+        '200':
+          description: Widget configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DashboardLayoutResponse'
+    put:
+      tags: [Dashboard]
+      summary: Save user's dashboard widget layout
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DashboardLayoutRequest'
+      responses:
+        '200':
+          description: Saved layout
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DashboardLayoutResponse'
+
+  # === GOALS (P1) ===
+  /goals:
+    get:
+      tags: [Goals]
+      summary: List all goals sorted by priority
+      parameters:
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/GoalStatusEnum'
+      responses:
+        '200':
+          description: Goals with computed fields
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Goal'
+    post:
+      tags: [Goals]
+      summary: Create a financial goal
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateGoalRequest'
+      responses:
+        '201':
+          description: Goal created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Goal'
+
+  /goals/{id}:
+    get:
+      tags: [Goals]
+      summary: Get goal by ID with contribution history
+      parameters:
+        - $ref: '#/components/parameters/pathId'
+      responses:
+        '200':
+          description: Goal with contributions
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Goal'
+                  - type: object
+                    properties:
+                      contributions:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/GoalContribution'
+    put:
+      tags: [Goals]
+      summary: Update a goal
+      parameters:
+        - $ref: '#/components/parameters/pathId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateGoalRequest'
+      responses:
+        '200':
+          description: Updated goal
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Goal'
+    delete:
+      tags: [Goals]
+      summary: Delete a goal and its contributions
+      parameters:
+        - $ref: '#/components/parameters/pathId'
+      responses:
+        '204':
+          description: Goal deleted
+
+  /goals/{id}/contributions:
+    get:
+      tags: [Goals]
+      summary: List contributions for a goal
+      parameters:
+        - $ref: '#/components/parameters/pathId'
+      responses:
+        '200':
+          description: Contribution history
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/GoalContribution'
+    post:
+      tags: [Goals]
+      summary: Log a contribution toward a goal
+      parameters:
+        - $ref: '#/components/parameters/pathId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateGoalContributionRequest'
+      responses:
+        '201':
+          description: Contribution logged, goal currentAmount updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoalContribution'
+
+  # === TAX PLANNING (P1) ===
+  /tax/profiles:
+    get:
+      tags: [Tax Planning]
+      summary: List tax profiles for current user
+      parameters:
+        - name: taxYear
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Tax profiles with computed rates
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TaxProfile'
+    post:
+      tags: [Tax Planning]
+      summary: Create a tax profile for a year
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTaxProfileRequest'
+      responses:
+        '201':
+          description: Profile created with computed marginal rates
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaxProfile'
+        '409':
+          description: Profile already exists for this user+year
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /tax/profiles/{id}:
+    put:
+      tags: [Tax Planning]
+      summary: Update a tax profile
+      parameters:
+        - $ref: '#/components/parameters/pathId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateTaxProfileRequest'
+      responses:
+        '200':
+          description: Updated profile with recomputed rates
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaxProfile'
+
+  /tax/profiles/{id}/contributions:
+    get:
+      tags: [Tax Planning]
+      summary: List tax contributions for a profile
+      parameters:
+        - $ref: '#/components/parameters/pathId'
+      responses:
+        '200':
+          description: Contributions with attribution status
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TaxContribution'
+    post:
+      tags: [Tax Planning]
+      summary: Log a tax contribution (RRSP/TFSA/Spousal)
+      parameters:
+        - $ref: '#/components/parameters/pathId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTaxContributionRequest'
+      responses:
+        '201':
+          description: Contribution logged
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaxContribution'
+        '422':
+          description: Over-contribution warning
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /tax/recommendation:
+    get:
+      tags: [Tax Planning]
+      summary: Get RRSP vs TFSA recommendation for household
+      description: Compares both partners' marginal rates (computed from taxBrackets.json config file) and recommends optimal allocation strategy.
+      parameters:
+        - name: taxYear
+          in: query
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Recommendation with rationale and disclaimer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaxRecommendation'
+
+  # === HEALTH ===
+  /health:
+    get:
+      tags: [Auth]
+      summary: Health check
+      security: []
+      responses:
+        '200':
+          description: Service healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [ok]
+                  timestamp:
+                    type: string
+                    format: date-time

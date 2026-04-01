@@ -1,0 +1,43 @@
+{
+  "_comment": "Federal and Ontario tax brackets. Updated annually. Verify against CRA publications before each tax year. Federal indexation factor for 2026: 2.0%. Ontario indexation factor for 2026: 1.9%. Ontario $150,000 and $220,000 thresholds are NOT indexed.",
+  "_source": "CRA / TaxTips.ca / EY Canada — confirmed January 2026",
+  "_lastUpdated": "2026-03-30",
+
+  "2026": {
+    "federal": [
+      { "min": 0, "max": 58523, "rate": 0.14 },
+      { "min": 58523, "max": 117045, "rate": 0.205 },
+      { "min": 117045, "max": 161633, "rate": 0.26 },
+      { "min": 161633, "max": 230451, "rate": 0.29 },
+      { "min": 230451, "max": null, "rate": 0.33 }
+    ],
+    "provincial": {
+      "ON": [
+        { "min": 0, "max": 52886, "rate": 0.0505 },
+        { "min": 52886, "max": 105773, "rate": 0.0915 },
+        { "min": 105773, "max": 150000, "rate": 0.1116 },
+        { "min": 150000, "max": 220000, "rate": 0.1216 },
+        { "min": 220000, "max": null, "rate": 0.1316 }
+      ]
+    }
+  },
+
+  "2025": {
+    "federal": [
+      { "min": 0, "max": 57375, "rate": 0.15, "_note": "14% effective Jul 1 2025; blended ~14.5% for 2025" },
+      { "min": 57375, "max": 114750, "rate": 0.205 },
+      { "min": 114750, "max": 158468, "rate": 0.26 },
+      { "min": 158468, "max": 220000, "rate": 0.29 },
+      { "min": 220000, "max": null, "rate": 0.33 }
+    ],
+    "provincial": {
+      "ON": [
+        { "min": 0, "max": 51446, "rate": 0.0505 },
+        { "min": 51446, "max": 102894, "rate": 0.0915 },
+        { "min": 102894, "max": 150000, "rate": 0.1116 },
+        { "min": 150000, "max": 220000, "rate": 0.1216 },
+        { "min": 220000, "max": null, "rate": 0.1316 }
+      ]
+    }
+  }
+}
