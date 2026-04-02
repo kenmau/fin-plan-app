@@ -1,0 +1,53 @@
+version: '3.9'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: finplan-postgres
+    environment:
+      POSTGRES_USER: finplan
+      POSTGRES_PASSWORD: finplan
+      POSTGRES_DB: finplan
+    ports:
+      - '5432:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U finplan']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.backend
+    container_name: finplan-backend
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://finplan:finplan@postgres:5432/finplan
+      JWT_SECRET: ${JWT_SECRET}
+      PORT: 3001
+      HOST: 0.0.0.0
+      CORS_ORIGIN: http://localhost
+    ports:
+      - '3001:3001'
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.frontend
+    container_name: finplan-frontend
+    ports:
+      - '80:80'
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+    name: finplan-pgdata
