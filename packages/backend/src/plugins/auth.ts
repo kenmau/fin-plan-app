@@ -13,6 +13,12 @@ declare module 'fastify' {
   }
 }
 
+// Routes that do not require authentication
+const PUBLIC_ROUTES = new Set([
+  'POST /api/v1/auth/login',
+  'GET /api/v1/health',
+]);
+
 const authPlugin: FastifyPluginAsync = async (fastify) => {
   await fastify.register(fastifyCookie);
 
@@ -37,6 +43,13 @@ const authPlugin: FastifyPluginAsync = async (fastify) => {
         },
       });
     }
+  });
+
+  fastify.addHook('onRequest', async (request, reply) => {
+    const urlWithoutQuery = request.url.split('?')[0];
+    const routeKey = `${request.method} ${urlWithoutQuery}`;
+    if (PUBLIC_ROUTES.has(routeKey)) return;
+    await fastify.authenticate(request, reply);
   });
 };
 

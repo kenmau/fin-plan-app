@@ -7,6 +7,7 @@ import fastifyCors from '@fastify/cors';
 import authPlugin from './plugins/auth';
 import errorHandlerPlugin from './plugins/errorHandler';
 import healthRoutes from './routes/health';
+import authRoutes from './routes/auth';
 import { config } from './config';
 
 export async function buildApp(): Promise<FastifyInstance> {
@@ -27,6 +28,7 @@ export async function buildApp(): Promise<FastifyInstance> {
 
   // Routes
   await app.register(healthRoutes, { prefix: '/api/v1' });
+  await app.register(authRoutes, { prefix: '/api/v1/auth' });
 
   return app;
 }
