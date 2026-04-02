@@ -1,4 +1,4 @@
-# FinPlan - Household Financial Planner
+# FinPlan — Household Financial Planner
 
 ## Project Overview
 
@@ -75,7 +75,6 @@ Every PR must include tests for the code it changes.
 
 ## Jira
 
-- Atlassian Domain: https://lan-and-ken.atlassian.net/
 - Project: FIN (FinPlan)
 - Epics: FIN-1 through FIN-9
 - Agent-ready Stories: FIN-35 through FIN-55
