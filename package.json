@@ -6,6 +6,8 @@
     "packages/*"
   ],
   "scripts": {
+    "dev": "docker compose -f infra/docker/docker-compose.yml up postgres -d && nx run-many --target=serve --projects=backend,frontend --parallel=2",
+    "dev:stop": "docker compose -f infra/docker/docker-compose.yml stop postgres",
     "build": "nx run-many --target=build",
     "test": "nx run-many --target=test",
     "lint": "nx run-many --target=lint",
