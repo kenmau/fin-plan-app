@@ -1,0 +1,27 @@
+{
+  "name": "finplan",
+  "version": "0.0.1",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "nx run-many --target=build",
+    "test": "nx run-many --target=test",
+    "lint": "nx run-many --target=lint",
+    "typecheck": "nx run-many --target=typecheck",
+    "db:generate": "nx run backend:db-generate",
+    "db:migrate": "nx run backend:db-migrate",
+    "db:seed": "nx run backend:db-seed"
+  },
+  "devDependencies": {
+    "@nx/eslint": "19.8.0",
+    "@nx/node": "19.8.0",
+    "@nx/vite": "19.8.0",
+    "@nx/workspace": "19.8.0",
+    "@types/node": "^20.0.0",
+    "nx": "19.8.0",
+    "typescript": "~5.5.0",
+    "vitest": "^2.0.0"
+  }
+}
