@@ -10,6 +10,11 @@ set -euo pipefail
 #   Parallel:         .agents/orchestrate.sh --parallel FIN-42 FIN-43 FIN-44 FIN-45
 #   Entire wave:      .agents/orchestrate.sh --wave 1
 #   Dry run:          .agents/orchestrate.sh --dry-run --wave 2
+#   Choose models:    .agents/orchestrate.sh --interactive FIN-36
+#   Auto-merge PRs:   .agents/orchestrate.sh --merge auto FIN-36 FIN-37
+#   Wait for merge:   .agents/orchestrate.sh --merge wait FIN-36 FIN-37
+#   Set models:       .agents/orchestrate.sh --generator-model claude-sonnet-4-6 --validator-model claude-opus-4-6 FIN-36
+#   Via env vars:     GENERATOR_MODEL=claude-opus-4-6 .agents/orchestrate.sh FIN-36
 #
 # Prerequisites:
 #   - claude CLI installed and authenticated
@@ -25,8 +30,15 @@ JIRA_CLOUD_ID="04e8e3fa-cba0-442e-ad49-bc4573622531"
 JIRA_BASE_URL="https://lan-and-ken.atlassian.net"
 PARALLEL=false
 DRY_RUN=false
+INTERACTIVE=false
+MERGE_STRATEGY=""
 WAVE=""
 LOG_DIR="$REPO_ROOT/.agents/logs"
+
+# Model configuration — override via flags, env vars, or --interactive prompt
+GENERATOR_MODEL="${GENERATOR_MODEL:-}"
+VALIDATOR_MODEL="${VALIDATOR_MODEL:-}"
+DEFAULT_MODEL="claude-sonnet-4-6"
 
 # Colors
 RED='\033[0;31m'
@@ -62,6 +74,26 @@ while [[ $# -gt 0 ]]; do
         --dry-run)
             DRY_RUN=true
             shift
+            ;;
+        --interactive|-i)
+            INTERACTIVE=true
+            shift
+            ;;
+        --merge|-m)
+            MERGE_STRATEGY="$2"
+            if [[ "$MERGE_STRATEGY" != "auto" && "$MERGE_STRATEGY" != "wait" ]]; then
+                log_error "Invalid merge strategy: $MERGE_STRATEGY. Valid: auto, wait"
+                exit 1
+            fi
+            shift 2
+            ;;
+        --generator-model)
+            GENERATOR_MODEL="$2"
+            shift 2
+            ;;
+        --validator-model)
+            VALIDATOR_MODEL="$2"
+            shift 2
             ;;
         --max-retries)
             MAX_RETRIES="$2"
@@ -112,6 +144,65 @@ if [ ${#TICKETS[@]} -eq 0 ]; then
     echo "Usage: .agents/orchestrate.sh [--parallel] [--wave N] [--dry-run] FIN-XX [FIN-YY ...]"
     exit 1
 fi
+
+# ============================================================================
+# Model selection
+# ============================================================================
+MODEL_OPTIONS=(
+    "claude-sonnet-4-6"
+    "claude-opus-4-6"
+)
+
+pick_model() {
+    local ROLE="$1"
+    local DEFAULT="$2"
+    echo ""
+    echo -e "${CYAN}Select model for ${ROLE}:${NC}"
+    for i in "${!MODEL_OPTIONS[@]}"; do
+        local MARKER=""
+        [ "${MODEL_OPTIONS[$i]}" = "$DEFAULT" ] && MARKER=" (default)"
+        echo "  $((i + 1))) ${MODEL_OPTIONS[$i]}${MARKER}"
+    done
+    echo -n "Choice [1-${#MODEL_OPTIONS[@]}] (enter for default): "
+    read -r CHOICE
+    if [ -z "$CHOICE" ]; then
+        echo "$DEFAULT"
+    elif [ "$CHOICE" -ge 1 ] 2>/dev/null && [ "$CHOICE" -le "${#MODEL_OPTIONS[@]}" ]; then
+        echo "${MODEL_OPTIONS[$((CHOICE - 1))]}"
+    else
+        log_warn "Invalid choice. Using default: $DEFAULT"
+        echo "$DEFAULT"
+    fi
+}
+
+if [ "$INTERACTIVE" = true ]; then
+    log "Model selection (--interactive)"
+    GENERATOR_MODEL=$(pick_model "Generator" "$DEFAULT_MODEL")
+    VALIDATOR_MODEL=$(pick_model "Validator" "$DEFAULT_MODEL")
+    
+    # Merge strategy prompt (only relevant for sequential/wave runs)
+    if [ "$PARALLEL" = false ] && [ -z "$MERGE_STRATEGY" ]; then
+        echo ""
+        echo -e "${CYAN}After a PR is created, how should the orchestrator proceed?${NC}"
+        echo "  1) auto — Auto-merge PR (squash) and continue immediately"
+        echo "  2) wait — Pause until you merge the PR, then continue"
+        echo "  3) none — Create PR and continue without merging (default)"
+        echo -n "Choice [1-3] (enter for default): "
+        read -r MERGE_CHOICE
+        case "$MERGE_CHOICE" in
+            1) MERGE_STRATEGY="auto" ;;
+            2) MERGE_STRATEGY="wait" ;;
+            *) MERGE_STRATEGY="" ;;
+        esac
+    fi
+fi
+
+# Fall back to defaults if still unset
+GENERATOR_MODEL="${GENERATOR_MODEL:-$DEFAULT_MODEL}"
+VALIDATOR_MODEL="${VALIDATOR_MODEL:-$DEFAULT_MODEL}"
+
+log "Generator model: $GENERATOR_MODEL"
+log "Validator model: $VALIDATOR_MODEL"
 
 # ============================================================================
 # Jira helpers
@@ -190,12 +281,20 @@ process_ticket() {
     BRANCH_SLUG=$(echo "$SUMMARY" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g' | sed 's/--*/-/g' | sed 's/^-//' | sed 's/-$//' | cut -c1-50)
     local BRANCH_NAME="$(echo "$TICKET_KEY" | tr '[:upper:]' '[:lower:]')/${BRANCH_SLUG}"
     
-    # Branch from main
+    # Branch from main — reset to clean state for idempotent re-runs
     local DEFAULT_BRANCH
     DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || echo "main")
     git checkout "$DEFAULT_BRANCH" 2>/dev/null || true
     git pull origin "$DEFAULT_BRANCH" 2>/dev/null || true
-    git checkout -b "$BRANCH_NAME" 2>/dev/null || git checkout "$BRANCH_NAME"
+    
+    if git show-ref --verify --quiet "refs/heads/$BRANCH_NAME" 2>/dev/null; then
+        # Branch exists from a previous run — reset it to main for a clean start
+        log_ticket "$TICKET_KEY" "Branch '$BRANCH_NAME' exists from prior run. Resetting to $DEFAULT_BRANCH."
+        git checkout "$BRANCH_NAME"
+        git reset --hard "$DEFAULT_BRANCH"
+    else
+        git checkout -b "$BRANCH_NAME"
+    fi
     
     # Transition to In Progress
     transition_ticket "$TICKET_KEY" "In Progress"
@@ -231,9 +330,10 @@ Implement this ticket. Read CLAUDE.md for project context. Follow all acceptance
         fi
         
         # Run Generator
-        log_ticket "$TICKET_KEY" "Running Generator..."
+        log_ticket "$TICKET_KEY" "Running Generator ($GENERATOR_MODEL)..."
         cd "$REPO_ROOT"
         echo "$GENERATOR_INPUT" | claude -p \
+            --model "$GENERATOR_MODEL" \
             --allowedTools "Bash,Read,Write,Edit" \
             --max-turns 50 \
             2>&1 | tee "$LOG_DIR/generator-${TICKET_KEY}-iter${ITERATION}.log"
@@ -241,20 +341,20 @@ Implement this ticket. Read CLAUDE.md for project context. Follow all acceptance
         # Stage changes
         git add -A
         
-        # Run automated checks
+        # Run automated checks (nx affected — only checks packages with changes)
         log_ticket "$TICKET_KEY" "Running checks..."
         local CHECKS_PASSED=true
         local CHECK_ERRORS=""
         
-        if ! npx nx lint 2>&1 | tee -a "$TICKET_LOG"; then
+        if ! npx nx affected --target=lint --base="$DEFAULT_BRANCH" 2>&1 | tee -a "$TICKET_LOG"; then
             CHECK_ERRORS+="LINT FAILED.\n"
             CHECKS_PASSED=false
         fi
-        if ! npx nx typecheck 2>&1 | tee -a "$TICKET_LOG"; then
+        if ! npx nx affected --target=typecheck --base="$DEFAULT_BRANCH" 2>&1 | tee -a "$TICKET_LOG"; then
             CHECK_ERRORS+="TYPECHECK FAILED.\n"
             CHECKS_PASSED=false
         fi
-        if ! npx nx test 2>&1 | tee -a "$TICKET_LOG"; then
+        if ! npx nx affected --target=test --base="$DEFAULT_BRANCH" 2>&1 | tee -a "$TICKET_LOG"; then
             CHECK_ERRORS+="TESTS FAILED.\n"
             CHECKS_PASSED=false
         fi
@@ -267,7 +367,7 @@ Implement this ticket. Read CLAUDE.md for project context. Follow all acceptance
         log_ticket "$TICKET_KEY" "✓ All checks passed"
         
         # Run Validator
-        log_ticket "$TICKET_KEY" "Running Validator..."
+        log_ticket "$TICKET_KEY" "Running Validator ($VALIDATOR_MODEL)..."
         local VALIDATOR_INPUT="## Ticket: $TICKET_KEY - $SUMMARY
 
 ## Acceptance Criteria:
@@ -280,6 +380,7 @@ Validate ALL acceptance criteria are met. Read each changed file. Output VERDICT
         
         local VALIDATOR_OUTPUT
         VALIDATOR_OUTPUT=$(echo "$VALIDATOR_INPUT" | claude -p \
+            --model "$VALIDATOR_MODEL" \
             --allowedTools "Bash,Read" \
             --max-turns 30 \
             --output-format text \
@@ -295,19 +396,101 @@ Validate ALL acceptance criteria are met. Read each changed file. Output VERDICT
             if ! git diff --cached --quiet; then
                 git commit -m "feat(${TICKET_KEY}): $(echo "$SUMMARY" | tr '[:upper:]' '[:lower:]')"
             fi
-            git push -u origin "$BRANCH_NAME" 2>/dev/null || git push origin "$BRANCH_NAME"
+            git push -u origin "$BRANCH_NAME" 2>&1 || git push --force-with-lease origin "$BRANCH_NAME"
+            
+            # Build rich PR description
+            local FILES_CHANGED
+            FILES_CHANGED=$(git diff --stat "$DEFAULT_BRANCH"...HEAD 2>/dev/null || echo "Unable to compute diff stats")
+            local FILE_LIST
+            FILE_LIST=$(git diff --name-only "$DEFAULT_BRANCH"...HEAD 2>/dev/null || echo "Unable to list files")
+            local LINES_ADDED
+            LINES_ADDED=$(git diff --shortstat "$DEFAULT_BRANCH"...HEAD 2>/dev/null | grep -oE '[0-9]+ insertion' | grep -oE '[0-9]+' || echo "0")
+            local LINES_REMOVED
+            LINES_REMOVED=$(git diff --shortstat "$DEFAULT_BRANCH"...HEAD 2>/dev/null | grep -oE '[0-9]+ deletion' | grep -oE '[0-9]+' || echo "0")
+            
+            # Extract test count from last test run log
+            local TEST_COUNT
+            TEST_COUNT=$(grep -oE '[0-9]+ (test|spec)s? passed' "$TICKET_LOG" 2>/dev/null | tail -1 || echo "see logs")
+            
+            # Summarize validator output (first 20 lines after VERDICT)
+            local VALIDATOR_SUMMARY
+            VALIDATOR_SUMMARY=$(echo "$VALIDATOR_OUTPUT" | head -60 | tail -40 || echo "See validator log")
             
             local PR_BODY="## $TICKET_KEY: $SUMMARY
 
-Implements [$TICKET_KEY]($JIRA_BASE_URL/browse/$TICKET_KEY).
+### Jira
+[$TICKET_KEY]($JIRA_BASE_URL/browse/$TICKET_KEY)
 
-**Agent stats:** Generator iterations: $ITERATION | Validator: PASS | Checks: PASS"
+### What this PR does
+$(echo "$DESCRIPTION" | head -30)
+
+### Files changed
+\`\`\`
+$FILES_CHANGED
+\`\`\`
+
+### Automated checks
+| Check | Status |
+|-------|--------|
+| Lint | ✅ Pass |
+| Typecheck | ✅ Pass |
+| Tests | ✅ Pass ($TEST_COUNT) |
+
+### Validator assessment
+<details>
+<summary>Validator output (click to expand)</summary>
+
+\`\`\`
+$VALIDATOR_SUMMARY
+\`\`\`
+</details>
+
+### Agent stats
+| Metric | Value |
+|--------|-------|
+| Generator iterations | $ITERATION / $MAX_RETRIES |
+| Generator model | \`$GENERATOR_MODEL\` |
+| Validator model | \`$VALIDATOR_MODEL\` |
+| Lines added | +$LINES_ADDED |
+| Lines removed | -$LINES_REMOVED |"
             
-            gh pr create \
+            # Create PR — if one already exists from a prior run, just update it
+            if ! gh pr create \
                 --title "$TICKET_KEY: $SUMMARY" \
                 --body "$PR_BODY" \
                 --assignee "@me" \
-                2>&1 | tee -a "$TICKET_LOG"
+                2>&1 | tee -a "$TICKET_LOG"; then
+                log_warn "PR may already exist. Attempting to update..."
+                gh pr edit "$BRANCH_NAME" \
+                    --title "$TICKET_KEY: $SUMMARY" \
+                    --body "$PR_BODY" \
+                    2>&1 | tee -a "$TICKET_LOG" || true
+            fi
+            
+            # Merge strategy — handle PR merge before moving to next ticket
+            if [ "$MERGE_STRATEGY" = "auto" ]; then
+                log_ticket "$TICKET_KEY" "Auto-merging PR (squash)..."
+                if gh pr merge "$BRANCH_NAME" --squash --delete-branch 2>&1 | tee -a "$TICKET_LOG"; then
+                    log_ticket "$TICKET_KEY" "✓ PR merged and branch deleted"
+                else
+                    log_warn "Auto-merge failed. PR may require review or have merge conflicts."
+                fi
+            elif [ "$MERGE_STRATEGY" = "wait" ]; then
+                log_ticket "$TICKET_KEY" "⏳ Waiting for PR to be merged before continuing..."
+                log_ticket "$TICKET_KEY" "Review and merge at: https://github.com/kenmau/fin-plan-app/pull/$BRANCH_NAME"
+                while true; do
+                    local PR_STATE
+                    PR_STATE=$(gh pr view "$BRANCH_NAME" --json state --jq '.state' 2>/dev/null || echo "UNKNOWN")
+                    if [ "$PR_STATE" = "MERGED" ]; then
+                        log_ticket "$TICKET_KEY" "✓ PR merged. Continuing..."
+                        break
+                    elif [ "$PR_STATE" = "CLOSED" ]; then
+                        log_error "PR was closed without merging. Stopping."
+                        return 1
+                    fi
+                    sleep 30
+                done
+            fi
             
             transition_ticket "$TICKET_KEY" "Done"
             
@@ -550,6 +733,7 @@ main() {
     log "FinPlan Agent Orchestrator"
     log "Tickets: ${TICKETS[*]}"
     log "Mode: $([ "$PARALLEL" = true ] && echo 'PARALLEL' || ([ -n "$WAVE" ] && echo "WAVE $WAVE (smart)" || echo 'SEQUENTIAL'))"
+    [ -n "$MERGE_STRATEGY" ] && log "Merge strategy: $MERGE_STRATEGY"
     [ "$DRY_RUN" = true ] && log "DRY RUN — no changes will be made"
     log "========================================="
     
