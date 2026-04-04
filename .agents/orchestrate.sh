@@ -231,8 +231,35 @@ fetch_ticket_description() {
     JSON=$(jira_api "issue/$KEY?fields=summary,description,labels,parent,status")
     
     SUMMARY=$(echo "$JSON" | jq -r '.fields.summary // "Unknown"')
-    DESCRIPTION=$(echo "$JSON" | jq -r '.fields.description // "No description"')
     STATUS=$(echo "$JSON" | jq -r '.fields.status.name // "Unknown"')
+    
+    # Extract description — Jira API v3 returns ADF (JSON), convert to plain text
+    local RAW_DESC
+    RAW_DESC=$(echo "$JSON" | jq -r '.fields.description // "No description"')
+    
+    # If description is ADF JSON, extract text nodes with structure; otherwise use as-is
+    if echo "$RAW_DESC" | jq -e '.type == "doc"' > /dev/null 2>&1; then
+        DESCRIPTION=$(echo "$RAW_DESC" | jq -r '
+            def extract_text:
+                if .type == "text" then .text
+                elif .type == "hardBreak" then "\n"
+                elif .type == "listItem" then
+                    "• " + ([.content[]? | extract_text] | join("") | gsub("\n$"; "")) + "\n"
+                elif .type == "paragraph" then
+                    ([.content[]? | extract_text] | join("")) + "\n"
+                elif .type == "heading" then
+                    "\n" + ([.content[]? | extract_text] | join("")) + "\n"
+                elif .type == "bulletList" or .type == "orderedList" then
+                    ([.content[]? | extract_text] | join(""))
+                elif .content then
+                    ([.content[]? | extract_text] | join(""))
+                else ""
+                end;
+            extract_text | gsub("\n{3,}"; "\n\n") | ltrimstr("\n") | rtrimstr("\n")
+        ' 2>/dev/null || echo "$RAW_DESC")
+    else
+        DESCRIPTION="$RAW_DESC"
+    fi
     
     if [ "$SUMMARY" = "null" ] || [ "$SUMMARY" = "Unknown" ]; then
         log_error "Failed to fetch $KEY"
@@ -330,13 +357,40 @@ Implement this ticket. Read CLAUDE.md for project context. Follow all acceptance
         fi
         
         # Run Generator
+        local GEN_LOG="$LOG_DIR/generator-${TICKET_KEY}-iter${ITERATION}.log"
         log_ticket "$TICKET_KEY" "Running Generator ($GENERATOR_MODEL)..."
+        log_ticket "$TICKET_KEY" "  └─ Live tail: tail -f $GEN_LOG"
         cd "$REPO_ROOT"
+        
+        : > "$GEN_LOG"  # truncate log file
+        local GEN_START=$SECONDS
+        
+        # Background progress monitor — watches log file size every 60s
+        (
+            while true; do
+                sleep 60
+                if [ -f "$GEN_LOG" ]; then
+                    local ELAPSED=$(( (SECONDS - GEN_START) / 60 ))
+                    local LOG_SIZE=$(du -h "$GEN_LOG" 2>/dev/null | cut -f1)
+                    log_ticket "$TICKET_KEY" "  ⏳ Generator running... ${ELAPSED}m elapsed, log: ${LOG_SIZE}"
+                fi
+            done
+        ) &
+        local MONITOR_PID=$!
+        
+        # Run generator in foreground — output streams to both terminal and log
         echo "$GENERATOR_INPUT" | claude -p \
             --model "$GENERATOR_MODEL" \
             --allowedTools "Bash,Read,Write,Edit" \
             --max-turns 50 \
-            2>&1 | tee "$LOG_DIR/generator-${TICKET_KEY}-iter${ITERATION}.log"
+            2>&1 | tee "$GEN_LOG"
+        
+        # Stop the progress monitor
+        kill "$MONITOR_PID" 2>/dev/null || true
+        wait "$MONITOR_PID" 2>/dev/null || true
+        
+        local GEN_ELAPSED=$(( SECONDS - GEN_START ))
+        log_ticket "$TICKET_KEY" "Generator finished in $((GEN_ELAPSED / 60))m $((GEN_ELAPSED % 60))s"
         
         # Stage changes
         git add -A
@@ -367,7 +421,11 @@ Implement this ticket. Read CLAUDE.md for project context. Follow all acceptance
         log_ticket "$TICKET_KEY" "✓ All checks passed"
         
         # Run Validator
+        local VAL_LOG="$LOG_DIR/validator-${TICKET_KEY}-iter${ITERATION}.log"
         log_ticket "$TICKET_KEY" "Running Validator ($VALIDATOR_MODEL)..."
+        log_ticket "$TICKET_KEY" "  └─ Live tail: tail -f $VAL_LOG"
+        local VAL_START=$SECONDS
+        
         local VALIDATOR_INPUT="## Ticket: $TICKET_KEY - $SUMMARY
 
 ## Acceptance Criteria:
@@ -386,7 +444,10 @@ Validate ALL acceptance criteria are met. Read each changed file. Output VERDICT
             --output-format text \
             2>&1)
         
-        echo "$VALIDATOR_OUTPUT" > "$LOG_DIR/validator-${TICKET_KEY}-iter${ITERATION}.log"
+        local VAL_ELAPSED=$(( SECONDS - VAL_START ))
+        log_ticket "$TICKET_KEY" "Validator finished in $((VAL_ELAPSED / 60))m $((VAL_ELAPSED % 60))s"
+        
+        echo "$VALIDATOR_OUTPUT" > "$VAL_LOG"
         
         if echo "$VALIDATOR_OUTPUT" | grep -qi "VERDICT:.*PASS"; then
             log_ticket "$TICKET_KEY" "✓ Validator: PASS"
