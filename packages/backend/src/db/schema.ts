@@ -8,7 +8,7 @@
  * @module packages/backend/src/db/schema.ts
  */
 
-import { pgTable, uuid, varchar, text, boolean, integer, numeric, date, timestamp, pgEnum, uniqueIndex, index, jsonb } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, boolean, integer, numeric, date, timestamp, pgEnum, uniqueIndex, index, jsonb, AnyPgColumn } from 'drizzle-orm/pg-core';
 
 // ---------------------------------------------------------------------------
 // Enums
@@ -85,7 +85,7 @@ export const balanceSnapshots = pgTable('balance_snapshots', {
 export const categories = pgTable('categories', {
   id: uuid('id').primaryKey().defaultRandom(),
   name: varchar('name', { length: 50 }).notNull(),
-  parentCategoryId: uuid('parent_category_id').references((): any => categories.id, { onDelete: 'restrict' }),
+  parentCategoryId: uuid('parent_category_id').references((): AnyPgColumn => categories.id, { onDelete: 'restrict' }),
   type: categoryTypeEnum('type').notNull(),
   icon: varchar('icon', { length: 30 }),
   color: varchar('color', { length: 20 }),
